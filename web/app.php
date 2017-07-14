@@ -1,27 +1,26 @@
 <?php
 
-ini_set('date.timezone', 'UTC');
-
-use Symfony\Component\ClassLoader\ApcClassLoader;
 use Symfony\Component\HttpFoundation\Request;
 
-$loader = require_once __DIR__.'/../app/bootstrap.php.cache';
-
-// Use APC for autoloading to improve performance.
-// Change 'sf2' to a unique prefix in order to prevent cache key conflicts
-// with other applications also using APC.
-if (function_exists('apc_store')) {
-    $apcLoader = new ApcClassLoader('packagist', $loader);
-    $loader->unregister();
-    $apcLoader->register(true);
-}
-
-require_once __DIR__.'/../app/AppKernel.php';
-//require_once __DIR__.'/../app/AppCache.php';
+/**
+ * @var \Symfony\Component\ClassLoader\ClassLoader
+ */
+$loader = require __DIR__.'/../app/autoload.php';
+include_once __DIR__.'/../app/bootstrap.php.cache';
 
 $kernel = new AppKernel('prod', false);
 $kernel->loadClassCache();
-//$kernel = new AppCache($kernel);
+
+if ($_SERVER['REMOTE_ADDR'] === '144.217.203.53') {
+    Request::setTrustedProxies([$_SERVER['REMOTE_ADDR']]);
+    // force all trusted header names
+    Request::setTrustedHeaderName(Request::HEADER_FORWARDED, '');
+    Request::setTrustedHeaderName(Request::HEADER_CLIENT_IP, 'X_REAL_IP');
+    Request::setTrustedHeaderName(Request::HEADER_CLIENT_HOST, '');
+    Request::setTrustedHeaderName(Request::HEADER_CLIENT_PROTO, '');
+    Request::setTrustedHeaderName(Request::HEADER_CLIENT_PORT, '');
+}
+
 $request = Request::createFromGlobals();
 $response = $kernel->handle($request);
 $response->send();

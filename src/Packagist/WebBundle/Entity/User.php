@@ -14,11 +14,43 @@ namespace Packagist\WebBundle\Entity;
 
 use Doctrine\Common\Collections\ArrayCollection;
 use Doctrine\ORM\Mapping as ORM;
-use FOS\UserBundle\Entity\User as BaseUser;
+use FOS\UserBundle\Model\User as BaseUser;
 
 /**
  * @ORM\Entity(repositoryClass="Packagist\WebBundle\Entity\UserRepository")
  * @ORM\Table(name="fos_user")
+ * @ORM\AttributeOverrides({
+ *     @ORM\AttributeOverride(name="username",
+ *         column=@ORM\Column(
+ *             name="username",
+ *             type="string",
+ *             length=191
+ *         )
+ *     ),
+ *     @ORM\AttributeOverride(name="usernameCanonical",
+ *         column=@ORM\Column(
+ *             name="username_canonical",
+ *             type="string",
+ *             length=191,
+ *             unique=true
+ *         )
+ *     ),
+ *     @ORM\AttributeOverride(name="email",
+ *         column=@ORM\Column(
+ *             name="email",
+ *             type="string",
+ *             length=191
+ *         )
+ *     ),
+ *     @ORM\AttributeOverride(name="emailCanonical",
+ *         column=@ORM\Column(
+ *             name="email_canonical",
+ *             type="string",
+ *             length=191,
+ *             unique=true
+ *         )
+ *     )
+ * })
  */
 class User extends BaseUser
 {
@@ -80,6 +112,7 @@ class User extends BaseUser
     {
         return array(
             'name' => $this->getUsername(),
+            'avatar_url' => $this->getGravatarUrl(),
         );
     }
 
@@ -231,5 +264,15 @@ class User extends BaseUser
     public function isNotifiableForFailures()
     {
         return $this->failureNotifications;
+    }
+
+    /**
+     * Get Gravatar Url
+     *
+     * @return string
+     */
+    public function getGravatarUrl()
+    {
+        return 'https://www.gravatar.com/avatar/'.md5(strtolower($this->getEmail())).'?d=identicon';
     }
 }

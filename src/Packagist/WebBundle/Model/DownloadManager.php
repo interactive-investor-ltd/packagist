@@ -21,8 +21,8 @@ use Predis\Client;
  */
 class DownloadManager
 {
-
     protected $redis;
+    protected $redisCommandLoaded = false;
 
     public function __construct(Client $redis)
     {
@@ -107,32 +107,37 @@ class DownloadManager
     }
 
     /**
-     * Tracks a new download by updating the relevant keys.
+     * Tracks downloads by updating the relevant keys.
      *
-     * @param \Packagist\WebBundle\Entity\Package|int $package
-     * @param \Packagist\WebBundle\Entity\Version|int $version
+     * @param array[] an array of arrays containing id (package id), vid (version id) and ip keys
      */
-    public function addDownload($package,  $version)
+    public function addDownloads(array $jobs)
     {
-        $redis = $this->redis;
+        $day = date('Ymd');
+        $month = date('Ym');
 
-        if ($package instanceof Package) {
-            $package = $package->getId();
+        if (!$this->redisCommandLoaded) {
+            $this->redis->getProfile()->defineCommand('downloadsIncr', 'Packagist\Redis\DownloadsIncr');
+            $this->redisCommandLoaded = true;
         }
 
-        if ($version instanceof Version) {
-            $version = $version->getId();
+        $args = ['downloads'];
+
+        foreach ($jobs as $job) {
+            $package = $job['id'];
+            $version = $job['vid'];
+
+            // throttle key
+            $args[] = 'dl:'.$package.':'.$job['ip'].':'.$day;
+            // stats keys
+            $args[] = 'dl:'.$package;
+            $args[] = 'dl:'.$package.':'.$month;
+            $args[] = 'dl:'.$package.':'.$day;
+            $args[] = 'dl:'.$package.'-'.$version;
+            $args[] = 'dl:'.$package.'-'.$version.':'.$month;
+            $args[] = 'dl:'.$package.'-'.$version.':'.$day;
         }
 
-        $redis->incr('downloads');
-
-        $redis->incr('dl:'.$package);
-        $redis->incr('dl:'.$package.':'.date('Ym'));
-        $redis->incr('dl:'.$package.':'.date('Ymd'));
-
-        $redis->incr('dl:'.$package.'-'.$version);
-        $redis->incr('dl:'.$package.'-'.$version.':'.date('Ym'));
-        $redis->incr('dl:'.$package.'-'.$version.':'.date('Ymd'));
+        $this->redis->downloadsIncr(...$args);
     }
-
 }

@@ -13,12 +13,16 @@
 namespace Packagist\WebBundle\Entity;
 
 use Doctrine\ORM\EntityRepository;
+use Doctrine\DBAL\Connection;
+use Predis\Client;
 
 /**
  * @author Jordi Boggiano <j.boggiano@seld.be>
  */
 class VersionRepository extends EntityRepository
 {
+    private $redis;
+
     protected $supportedLinkTypes = array(
         'require',
         'conflict',
@@ -27,6 +31,11 @@ class VersionRepository extends EntityRepository
         'devRequire',
         'suggest',
     );
+
+    public function setRedis(Client $client)
+    {
+        $this->redis = $client;
+    }
 
     public function remove(Version $version)
     {
@@ -45,6 +54,54 @@ class VersionRepository extends EntityRepository
         $em->getConnection()->executeQuery('DELETE FROM link_require WHERE version_id=:id', array('id' => $version->getId()));
 
         $em->remove($version);
+    }
+
+    public function getVersionData(array $versionIds)
+    {
+        $links = [
+            'require' => 'link_require',
+            'devRequire' => 'link_require_dev',
+            'suggest' => 'link_suggest',
+            'conflict' => 'link_conflict',
+            'provide' => 'link_provide',
+            'replace' => 'link_replace',
+        ];
+
+        $result = [];
+        foreach ($versionIds as $id) {
+            $result[$id] = [
+                'require' => [],
+                'devRequire' => [],
+                'suggest' => [],
+                'conflict' => [],
+                'provide' => [],
+                'replace' => [],
+            ];
+        }
+
+        foreach ($links as $link => $table) {
+            $rows = $this->getEntityManager()->getConnection()->fetchAll(
+                'SELECT version_id, packageName name, packageVersion version FROM '.$table.' WHERE version_id IN (:ids)',
+                ['ids' => $versionIds],
+                ['ids' => Connection::PARAM_INT_ARRAY]
+            );
+            foreach ($rows as $row) {
+                $result[$row['version_id']][$link][] = $row;
+            }
+        }
+
+        $rows = $this->getEntityManager()->getConnection()->fetchAll(
+            'SELECT va.version_id, name, email, homepage, role FROM author a JOIN version_author va ON va.author_id = a.id WHERE va.version_id IN (:ids)',
+            ['ids' => $versionIds],
+            ['ids' => Connection::PARAM_INT_ARRAY]
+        );
+        foreach ($rows as $row) {
+            $versionId = $row['version_id'];
+            unset($row['version_id']);
+            $result[$versionId]['authors'][] = array_filter($row);
+        }
+
+        return $result;
     }
 
     public function getFullVersion($versionId)
@@ -73,7 +130,9 @@ class VersionRepository extends EntityRepository
         $qb->select('v')
             ->from('Packagist\WebBundle\Entity\Version', 'v')
             ->where('v.development = false')
+            ->andWhere('v.releasedAt <= ?0')
             ->orderBy('v.releasedAt', 'DESC');
+        $qb->setParameter(0, date('Y-m-d H:i:s'));
 
         if ($vendor || $package) {
             $qb->innerJoin('v.package', 'p')
@@ -81,11 +140,11 @@ class VersionRepository extends EntityRepository
         }
 
         if ($vendor) {
-            $qb->andWhere('p.name LIKE ?0');
-            $qb->setParameter(0, $vendor.'/%');
+            $qb->andWhere('p.name LIKE ?1');
+            $qb->setParameter(1, $vendor.'/%');
         } elseif ($package) {
-            $qb->andWhere('p.name = ?0')
-                ->setParameter(0, $package);
+            $qb->andWhere('p.name = ?1')
+                ->setParameter(1, $package);
         }
 
         return $qb;
@@ -93,8 +152,12 @@ class VersionRepository extends EntityRepository
 
     public function getLatestReleases($count = 10)
     {
+        if ($cached = $this->redis->get('new_releases')) {
+            return json_decode($cached, true);
+        }
+
         $qb = $this->getEntityManager()->createQueryBuilder();
-        $qb->select('v')
+        $qb->select('v.name, v.version, v.description')
             ->from('Packagist\WebBundle\Entity\Version', 'v')
             ->where('v.development = false')
             ->andWhere('v.releasedAt < :now')
@@ -102,6 +165,9 @@ class VersionRepository extends EntityRepository
             ->setMaxResults($count)
             ->setParameter('now', date('Y-m-d H:i:s'));
 
-        return $qb->getQuery()->useResultCache(true, 900, 'new_releases')->getResult();
+        $res = $qb->getQuery()->getResult();
+        $this->redis->setex('new_releases', 600, json_encode($res));
+
+        return $res;
     }
 }

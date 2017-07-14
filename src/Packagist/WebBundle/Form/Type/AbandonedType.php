@@ -13,6 +13,7 @@
 namespace Packagist\WebBundle\Form\Type;
 
 use Symfony\Component\Form\AbstractType;
+use Symfony\Component\Form\Extension\Core\Type\TextType;
 use Symfony\Component\Form\FormBuilderInterface;
 
 /**
@@ -32,19 +33,19 @@ class AbandonedType extends AbstractType
     {
         $builder->add(
             'replacement',
-            'text',
+            TextType::class,
             array(
                 'required' => false,
                 'label'    => 'Replacement package',
-                'attr'     => array('placeholder' => 'optional')
+                'attr'     => array('placeholder' => 'optional package name')
             )
         );
     }
 
     /**
-     * @return string
+     * {@inheritdoc}
      */
-    public function getName()
+    public function getBlockPrefix()
     {
         return 'package';
     }

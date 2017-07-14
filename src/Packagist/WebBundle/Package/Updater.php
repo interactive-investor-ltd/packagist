@@ -12,9 +12,12 @@
 
 namespace Packagist\WebBundle\Package;
 
+use cebe\markdown\GithubMarkdown;
 use Composer\Package\AliasPackage;
 use Composer\Package\PackageInterface;
 use Composer\Repository\RepositoryInterface;
+use Composer\Repository\VcsRepository;
+use Composer\Repository\Vcs\GitHubDriver;
 use Composer\Repository\InvalidRepositoryException;
 use Composer\Util\ErrorHandler;
 use Composer\Util\RemoteFilesystem;
@@ -100,8 +103,44 @@ class Updater
         $pruneDate = clone $start;
         $pruneDate->modify('-1min');
 
-        $versions = $repository->getPackages();
         $em = $this->doctrine->getManager();
+        $apc = extension_loaded('apcu');
+
+        if ($repository instanceof VcsRepository) {
+            $cfg = $repository->getRepoConfig();
+            if (isset($cfg['url']) && preg_match('{\bgithub\.com\b}', $cfg['url'])) {
+                foreach ($package->getMaintainers() as $maintainer) {
+                    if (!($newGithubToken = $maintainer->getGithubToken())) {
+                        continue;
+                    }
+
+                    $valid = null;
+                    if ($apc) {
+                        $valid = apcu_fetch('is_token_valid_'.$maintainer->getUsernameCanonical());
+                    }
+
+                    if (true !== $valid) {
+                        $context = stream_context_create(['http' => ['header' => 'User-agent: packagist-token-check']]);
+                        $rate = json_decode(@file_get_contents('https://api.github.com/rate_limit?access_token='.$newGithubToken, false, $context), true);
+                        // invalid/outdated token, wipe it so we don't try it again
+                        if (!$rate && (strpos($http_response_header[0], '403') || strpos($http_response_header[0], '401'))) {
+                            $maintainer->setGithubToken(null);
+                            $em->flush($maintainer);
+                            continue;
+                        }
+                    }
+
+                    if ($apc) {
+                        apcu_store('is_token_valid_'.$maintainer->getUsernameCanonical(), true, 86400);
+                    }
+
+                    $io->setAuthentication('github.com', $newGithubToken, 'x-oauth-basic');
+                    break;
+                }
+            }
+        }
+
+        $versions = $repository->getPackages();
 
         usort($versions, function ($a, $b) {
             $aVersion = $a->getVersion();
@@ -141,6 +180,7 @@ class Updater
         }
 
         $lastUpdated = true;
+        $lastProcessed = null;
         foreach ($versions as $version) {
             if ($version instanceof AliasPackage) {
                 continue;
@@ -149,6 +189,12 @@ class Updater
             if (preg_match($blacklist, $version->getName().' '.$version->getPrettyVersion())) {
                 continue;
             }
+
+            if ($lastProcessed && $lastProcessed->getVersion() === $version->getVersion()) {
+                $io->write('Skipping version '.$version->getPrettyVersion().' (duplicate of '.$lastProcessed->getPrettyVersion().')', true, IOInterface::VERBOSE);
+                continue;
+            }
+            $lastProcessed = $version;
 
             $lastUpdated = $this->updateInformation($package, $version, $flags);
             if ($lastUpdated) {
@@ -167,8 +213,10 @@ class Updater
             }
         }
 
-        if (preg_match('{^(?:git://|git@|https?://)github.com[:/]([^/]+)/(.+?)(?:\.git|/)?$}i', $package->getRepository(), $match)) {
-            $this->updateGitHubInfo($rfs, $package, $match[1], $match[2]);
+        if (preg_match('{^(?:git://|git@|https?://)github.com[:/]([^/]+)/(.+?)(?:\.git|/)?$}i', $package->getRepository(), $match) && $repository instanceof VcsRepository) {
+            $this->updateGitHubInfo($rfs, $package, $match[1], $match[2], $repository);
+        } else {
+            $this->updateReadme($io, $package, $repository);
         }
 
         $package->setUpdatedAt(new \DateTime);
@@ -207,8 +255,9 @@ class Updater
 
         $em->persist($version);
 
-        $version->setDescription($data->getDescription());
-        $package->setDescription($data->getDescription());
+        $descr = $this->sanitize($data->getDescription());
+        $version->setDescription($descr);
+        $package->setDescription($descr);
         $version->setHomepage($data->getHomepage());
         $version->setLicense($data->getLicense() ?: array());
 
@@ -236,9 +285,10 @@ class Updater
         }
 
         if ($data->getType()) {
-            $version->setType($data->getType());
-            if ($data->getType() && $data->getType() !== $package->getType()) {
-                $package->setType($data->getType());
+            $type = $this->sanitize($data->getType());
+            $version->setType($type);
+            if ($type !== $package->getType()) {
+                $package->setType($type);
             }
         }
 
@@ -249,18 +299,34 @@ class Updater
         $version->setIncludePaths($data->getIncludePaths());
         $version->setSupport($data->getSupport());
 
-        $version->getTags()->clear();
         if ($data->getKeywords()) {
             $keywords = array();
             foreach ($data->getKeywords() as $keyword) {
                 $keywords[mb_strtolower($keyword, 'UTF-8')] = $keyword;
             }
-            foreach ($keywords as $keyword) {
+
+            $existingTags = [];
+            foreach ($version->getTags() as $tag) {
+                $existingTags[mb_strtolower($tag->getName(), 'UTF-8')] = $tag;
+            }
+
+            foreach ($keywords as $tagKey => $keyword) {
+                if (isset($existingTags[$tagKey])) {
+                    unset($existingTags[$tagKey]);
+                    continue;
+                }
+
                 $tag = Tag::getByName($em, $keyword, true);
                 if (!$version->getTags()->contains($tag)) {
                     $version->addTag($tag);
                 }
             }
+
+            foreach ($existingTags as $tag) {
+                $version->getTags()->removeElement($tag);
+            }
+        } elseif (count($version->getTags())) {
+            $version->getTags()->clear();
         }
 
         $authorRepository = $this->doctrine->getRepository('PackagistWebBundle:Author');
@@ -304,7 +370,10 @@ class Updater
                     }
                 }
 
-                $author->setUpdatedAt(new \DateTime);
+                // only update the author timestamp once a month at most as the value is kinda unused
+                if ($author->getUpdatedAt() === null || $author->getUpdatedAt()->getTimestamp() < time() - 86400 * 30) {
+                    $author->setUpdatedAt(new \DateTime);
+                }
                 if (!$version->getAuthors()->contains($author)) {
                     $version->addAuthor($author);
                 }
@@ -390,15 +459,67 @@ class Updater
         return true;
     }
 
-    private function updateGitHubInfo(RemoteFilesystem $rfs, Package $package, $owner, $repo)
+    /**
+     * Update the readme for $package from $repository.
+     *
+     * @param IOInterface $io
+     * @param Package $package
+     * @param VcsRepository $repository
+     */
+    private function updateReadme(IOInterface $io, Package $package, VcsRepository $repository)
+    {
+        try {
+            $driver = $repository->getDriver();
+            $composerInfo = $driver->getComposerInformation($driver->getRootIdentifier());
+            if (isset($composerInfo['readme'])) {
+                $readmeFile = $composerInfo['readme'];
+            } else {
+                $readmeFile = 'README.md';
+            }
+
+            $ext = substr($readmeFile, strrpos($readmeFile, '.'));
+            if ($ext === $readmeFile) {
+                $ext = '.txt';
+            }
+
+            switch ($ext) {
+                case '.txt':
+                    $source = $driver->getFileContent($readmeFile, $driver->getRootIdentifier());
+                    if (!empty($source)) {
+                        $package->setReadme('<pre>' . htmlspecialchars($source) . '</pre>');
+                    }
+                    break;
+
+                case '.md':
+                    $source = $driver->getFileContent($readmeFile, $driver->getRootIdentifier());
+                    $parser = new GithubMarkdown();
+                    $readme = $parser->parse($source);
+
+                    if (!empty($readme)) {
+                        $package->setReadme($this->prepareReadme($readme));
+                    }
+                    break;
+            }
+        } catch (\Exception $e) {
+            // we ignore all errors for this minor function
+            $io->write(
+                'Can not update readme. Error: ' . $e->getMessage(),
+                true,
+                IOInterface::VERBOSE
+            );
+        }
+    }
+
+    private function updateGitHubInfo(RemoteFilesystem $rfs, Package $package, $owner, $repo, VcsRepository $repository)
     {
         $baseApiUrl = 'https://api.github.com/repos/'.$owner.'/'.$repo;
 
-        try {
-            $repoData = JsonFile::parseJson($rfs->getContents('github.com', $baseApiUrl, false), $baseApiUrl);
-        } catch (\Exception $e) {
+        $driver = $repository->getDriver();
+        if (!$driver instanceof GitHubDriver) {
             return;
         }
+
+        $repoData = $driver->getRepoData();
 
         try {
             $opts = ['http' => ['header' => ['Accept: application/vnd.github.v3.html']]];
@@ -411,55 +532,123 @@ class Updater
         }
 
         if (!empty($readme)) {
-            $config = \HTMLPurifier_Config::createDefault();
-            $config->set('HTML.Allowed', 'a[href|target|rel|id],strong,b,em,i,strike,pre,code,p,ol,ul,li,br,h1,h2,h3,img[src|title|alt|width|height|style]');
-            $config->set('Attr.EnableID', true);
-            $config->set('Attr.AllowedFrameTargets', ['_blank']);
-            $purifier = new \HTMLPurifier($config);
-            $readme = $purifier->purify($readme);
-
-            $dom = new \DOMDocument();
-            $dom->loadHTML('<?xml encoding="UTF-8">' . $readme);
-
-            // Links can not be trusted
-            $links = $dom->getElementsByTagName('a');
-            foreach ($links as $link) {
-                $link->setAttribute('rel', 'nofollow');
-                if ('#' === substr($link->getAttribute('href'), 0, 1)) {
-                    $link->setAttribute('href', '#user-content-'.substr($link->getAttribute('href'), 1));
-                }
-            }
-
-            // remove first title as it's usually the project name which we don't need
-            if ($dom->getElementsByTagName('h1')->length) {
-                $first = $dom->getElementsByTagName('h1')->item(0);
-                $first->parentNode->removeChild($first);
-            } elseif ($dom->getElementsByTagName('h2')->length) {
-                $first = $dom->getElementsByTagName('h2')->item(0);
-                $first->parentNode->removeChild($first);
-            }
-
-            $readme = $dom->saveHTML();
-            $readme = substr($readme, strpos($readme, '<body>')+6);
-            $readme = substr($readme, 0, strrpos($readme, '</body>'));
-
-            $package->setReadme($readme);
+            $package->setReadme($this->prepareReadme($readme, true, $owner, $repo));
         }
 
         if (!empty($repoData['language'])) {
             $package->setLanguage($repoData['language']);
         }
-        if (!empty($repoData['stargazers_count'])) {
+        if (isset($repoData['stargazers_count'])) {
             $package->setGitHubStars($repoData['stargazers_count']);
         }
-        if (!empty($repoData['subscribers_count'])) {
+        if (isset($repoData['subscribers_count'])) {
             $package->setGitHubWatches($repoData['subscribers_count']);
         }
-        if (!empty($repoData['network_count'])) {
+        if (isset($repoData['network_count'])) {
             $package->setGitHubForks($repoData['network_count']);
         }
-        if (!empty($repoData['open_issues_count'])) {
+        if (isset($repoData['open_issues_count'])) {
             $package->setGitHubOpenIssues($repoData['open_issues_count']);
         }
+    }
+
+    /**
+     * Prepare the readme by stripping elements and attributes that are not supported .
+     *
+     * @param string $readme
+     * @param bool $isGithub
+     * @param null $owner
+     * @param null $repo
+     * @return string
+     */
+    private function prepareReadme($readme, $isGithub = false, $owner = null, $repo = null)
+    {
+        $elements = array(
+            'p',
+            'br',
+            'small',
+            'strong', 'b',
+            'em', 'i',
+            'strike',
+            'sub', 'sup',
+            'ins', 'del',
+            'ol', 'ul', 'li',
+            'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+            'dl', 'dd', 'dt',
+            'pre', 'code', 'samp', 'kbd',
+            'q', 'blockquote', 'abbr', 'cite',
+            'table', 'thead', 'tbody', 'th', 'tr', 'td',
+            'a', 'span',
+            'img',
+        );
+
+        $attributes = array(
+            'img.src', 'img.title', 'img.alt', 'img.width', 'img.height', 'img.style',
+            'a.href', 'a.target', 'a.rel', 'a.id',
+            'td.colspan', 'td.rowspan', 'th.colspan', 'th.rowspan',
+            '*.class'
+        );
+
+        $config = \HTMLPurifier_Config::createDefault();
+        $config->set('HTML.AllowedElements', implode(',', $elements));
+        $config->set('HTML.AllowedAttributes', implode(',', $attributes));
+        $config->set('Attr.EnableID', true);
+        $config->set('Attr.AllowedFrameTargets', ['_blank']);
+        $purifier = new \HTMLPurifier($config);
+        $readme = $purifier->purify($readme);
+
+        $dom = new \DOMDocument();
+        $dom->loadHTML('<?xml encoding="UTF-8">' . $readme);
+
+        // Links can not be trusted, mark them nofollow and convert relative to absolute links
+        $links = $dom->getElementsByTagName('a');
+        foreach ($links as $link) {
+            $link->setAttribute('rel', 'nofollow noopener external');
+            if ('#' === substr($link->getAttribute('href'), 0, 1)) {
+                $link->setAttribute('href', '#user-content-'.substr($link->getAttribute('href'), 1));
+            } elseif ('mailto:' === substr($link->getAttribute('href'), 0, 7)) {
+                // do nothing
+            } elseif ($isGithub && false === strpos($link->getAttribute('href'), '//')) {
+                $link->setAttribute(
+                    'href',
+                    'https://github.com/'.$owner.'/'.$repo.'/blob/HEAD/'.$link->getAttribute('href')
+                );
+            }
+        }
+
+        if ($isGithub) {
+            // convert relative to absolute images
+            $images = $dom->getElementsByTagName('img');
+            foreach ($images as $img) {
+                if (false === strpos($img->getAttribute('src'), '//')) {
+                    $img->setAttribute(
+                        'src',
+                        'https://raw.github.com/'.$owner.'/'.$repo.'/HEAD/'.$img->getAttribute('src')
+                    );
+                }
+            }
+        }
+
+        // remove first page element if it's a <h1> or <h2>, because it's usually
+        // the project name or the `README` string which we don't need
+        $first = $dom->getElementsByTagName('body')->item(0)->childNodes->item(0);
+
+        if ($first && ('h1' === $first->nodeName || 'h2' === $first->nodeName)) {
+            $first->parentNode->removeChild($first);
+        }
+
+        $readme = $dom->saveHTML();
+        $readme = substr($readme, strpos($readme, '<body>')+6);
+        $readme = substr($readme, 0, strrpos($readme, '</body>'));
+
+        return str_replace("\r\n", "\n", $readme);
+    }
+
+    private function sanitize($str)
+    {
+        // remove escape chars
+        $str = preg_replace("{\x1B(?:\[.)?}u", '', $str);
+
+        return preg_replace("{[\x01-\x1A]}u", '', $str);
     }
 }

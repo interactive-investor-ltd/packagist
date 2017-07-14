@@ -129,7 +129,13 @@
         }
 
         if (keymap.enter === event.which && currentSelected.data('url')) {
-            window.location = currentSelected.data('url');
+            var url = currentSelected.data('url');
+            if (event.ctrlKey) {
+                window.open(url);
+                return;
+            }
+
+            window.location = url;
             return;
         }
 
@@ -137,23 +143,18 @@
             currentSelected.removeClass('selected');
             nextSelected.addClass('selected');
 
-            var elTop = nextSelected.position().top,
-                elHeight = nextSelected.height(),
-                windowTop = $(window).scrollTop(),
-                windowHeight = $(window).height();
-
-            if (elTop < windowTop) {
-                $(window).scrollTop(elTop);
-            } else if (elTop + elHeight > windowTop + windowHeight) {
-                $(window).scrollTop(elTop + elHeight + 20 - windowHeight);
-            }
+            nextSelected.get(0).scrollIntoView(false);
         }
     });
 
     // handle pressing S to focus the search
     $(document.body).bind('keyup', function (event) {
-        if (event.which === 83 && (!document.activeElement || document.activeElement.tagName !== 'INPUT')) {
+        if (event.which === 83 && (!document.activeElement || -1 === ['INPUT','SELECT','TEXTAREA'].indexOf(document.activeElement.tagName))) {
             $('#search_query_query').focus();
         }
     });
+
+    if ($(document).width() >= 992) {
+        $('#search_query_query').focus();
+    }
 }(jQuery));

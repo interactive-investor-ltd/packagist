@@ -2,34 +2,34 @@
 
 namespace Packagist\WebBundle\Twig;
 
-use Symfony\Bridge\Doctrine\RegistryInterface;
+use Packagist\WebBundle\Model\ProviderManager;
 
 class PackagistExtension extends \Twig_Extension
 {
     /**
-     * @var \Symfony\Bridge\Doctrine\RegistryInterface
+     * @var ProviderManager
      */
-    private $doctrine;
+    private $providerManager;
 
-    public function __construct(RegistryInterface $doctrine)
+    public function __construct(ProviderManager $providerManager)
     {
-        $this->doctrine = $doctrine;
+        $this->providerManager = $providerManager;
     }
 
     public function getTests()
     {
         return array(
-            'existing_package' => new \Twig_Test_Method($this, 'packageExistsTest'),
-            'existing_provider' => new \Twig_Test_Method($this, 'providerExistsTest'),
-            'numeric' => new \Twig_Test_Method($this, 'numericTest'),
+            new \Twig_SimpleTest('existing_package', [$this, 'packageExistsTest']),
+            new \Twig_SimpleTest('existing_provider', [$this, 'providerExistsTest']),
+            new \Twig_SimpleTest('numeric', [$this, 'numericTest']),
         );
     }
 
     public function getFilters()
     {
         return array(
-            'prettify_source_reference' => new \Twig_Filter_Method($this, 'prettifySourceReference'),
-            'gravatar_hash' => new \Twig_Filter_Method($this, 'generateGravatarHash')
+            new \Twig_SimpleFilter('prettify_source_reference', [$this, 'prettifySourceReference']),
+            new \Twig_SimpleFilter('gravatar_hash', [$this, 'generateGravatarHash'])
         );
     }
 
@@ -49,16 +49,12 @@ class PackagistExtension extends \Twig_Extension
             return false;
         }
 
-        $repo = $this->doctrine->getRepository('PackagistWebBundle:Package');
-
-        return $repo->packageExists($package);
+        return $this->providerManager->packageExists($package);
     }
 
     public function providerExistsTest($package)
     {
-        $repo = $this->doctrine->getRepository('PackagistWebBundle:Package');
-
-        return $repo->packageIsProvided($package);
+        return $this->providerManager->packageIsProvided($package);
     }
 
     public function prettifySourceReference($sourceReference)

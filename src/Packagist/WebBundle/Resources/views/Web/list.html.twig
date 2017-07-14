@@ -3,13 +3,15 @@
 {% import "PackagistWebBundle::macros.html.twig" as macros %}
 
 {% block content %}
-    {% block content_title %}<h3 class="title">Packages</h3>{% endblock %}
+    {% block content_title %}<h3 class="title">{{ 'listing.title'|trans }}</h3>{% endblock %}
 
     {% block list %}
         {% if packages|length %}
             {{ macros.listPackages(packages, paginate is not defined or paginate, showAutoUpdateWarning|default(false), meta|default(null)) }}
         {% else %}
-            <p>No packages found.</p>
+            <div class="alert alert-danger">
+                <p>{{ 'listing.nopackages'|trans }}</p>
+            </div>
         {% endif %}
     {% endblock %}
 {% endblock %}

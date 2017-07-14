@@ -49,9 +49,13 @@ class UserController extends Controller
         );
     }
 
+    /**
+     * @param Request $req
+     * @return Response
+     */
     public function myProfileAction(Request $req)
     {
-        $user = $this->container->get('security.context')->getToken()->getUser();
+        $user = $this->container->get('security.token_storage')->getToken()->getUser();
         if (!is_object($user) || !$user instanceof UserInterface) {
             throw new AccessDeniedException('This user does not have access to this section.');
         }
@@ -59,7 +63,7 @@ class UserController extends Controller
         $packages = $this->getUserPackages($req, $user);
 
         return $this->container->get('templating')->renderResponse(
-            'FOSUserBundle:Profile:show.html.'.$this->container->getParameter('fos_user.template.engine'),
+            'FOSUserBundle:Profile:show.html.twig',
             array(
                 'packages' => $packages,
                 'meta' => $this->getPackagesMetadata($packages),
@@ -119,13 +123,11 @@ class UserController extends Controller
      * @ParamConverter("user", options={"mapping": {"name": "username"}})
      * @Method({"POST"})
      */
-    public function postFavoriteAction(User $user)
+    public function postFavoriteAction(Request $req, User $user)
     {
         if ($user->getId() !== $this->getUser()->getId()) {
             throw new AccessDeniedException('You can only change your own favorites');
         }
-
-        $req = $this->getRequest();
 
         $package = $req->request->get('package');
         try {
@@ -158,12 +160,16 @@ class UserController extends Controller
         return new Response('{"status": "success"}', 204);
     }
 
+    /**
+     * @param Request $req
+     * @param User $user
+     * @return Pagerfanta
+     */
     protected function getUserPackages($req, $user)
     {
         $packages = $this->getDoctrine()
             ->getRepository('PackagistWebBundle:Package')
-            ->getFilteredQueryBuilder(array('maintainer' => $user->getId()))
-            ->orderBy('p.name');
+            ->getFilteredQueryBuilder(array('maintainer' => $user->getId()), true);
 
         $paginator = new Pagerfanta(new DoctrineORMAdapter($packages, true));
         $paginator->setMaxPerPage(15);

@@ -11,14 +11,17 @@
     "require": {
         "vendor/package": "1.3.2",
         "vendor/package2": "1.*",
-        "vendor/package3": ">=2.0.3"
+        "vendor/package3": "^2.0.3"
     }
 }</code></pre>
+
+            <p>For more information about packages versions usage, see the <a href="https://getcomposer.org/doc/01-basic-usage.md#package-versions">composer documentation</a>.</p>
 
             <h3>Install Composer In Your Project</h3>
             <p>Run this in your command line:</p>
             <pre><code>curl -sS https://getcomposer.org/installer | php</code></pre>
             <p>Or <a href="https://getcomposer.org/composer.phar">download composer.phar</a> into your project root.</p>
+            <p>See the Composer documentation for complete <a href="https://getcomposer.org/doc/00-intro.md#installation-linux-unix-osx">installation instructions</a> on various platforms.</p>
 
             <h3>Install Dependencies</h3>
             <p>Execute this in your project root.</p>
@@ -40,7 +43,7 @@
     "name": "your-vendor-name/package-name",
     "description": "A short description of what your package does",
     "require": {
-        "php": ">=5.3.0",
+        "php": "^5.3.3 || ^7.0",
         "another-vendor/package": "1.*"
     }
 }</code></pre>
@@ -53,6 +56,9 @@
             <h3>Publish It</h3>
             <p><a href="{{ path('hwi_oauth_connect') }}">Login</a> or <a href="{{ path('fos_user_registration_register') }}">register</a> on this site, then hit the <a href="{{ path('submit') }}">submit</a> button in the menu.</p>
             <p>Once you entered your public repository URL in there, your package will be automatically crawled periodically. You just have to make sure you keep the composer.json file up to date.</p>
+
+            <h3>Sharing Private Code</h3>
+            <p>Use <a href="https://packagist.com">Private Packagist</a> if you want to share private code as a Composer package with colleagues or customers without publishing it for everyone on Packagist.org. Private Packagist allows you to manage your own private Composer repository with per-user authentication, team management and integration in version control systems.</p>
         </div>
     </section>
 </section>

@@ -14,7 +14,7 @@ namespace Packagist\WebBundle\Model;
 
 use Doctrine\ORM\EntityManager;
 use Packagist\WebBundle\Entity\Package;
-use Symfony\Component\HttpKernel\Log\LoggerInterface;
+use Psr\Log\LoggerInterface;
 
 /**
  * @author Jordi Boggiano <j.boggiano@seld.be>
@@ -51,7 +51,7 @@ class PackageManager
                     'package' => $package,
                     'exception' => get_class($e),
                     'exceptionMessage' => $e->getMessage(),
-                    'details' => $details,
+                    'details' => strip_tags($details),
                 ));
 
                 $message = \Swift_Message::newInstance()
@@ -64,7 +64,7 @@ class PackageManager
                 try {
                     $this->mailer->send($message);
                 } catch (\Swift_TransportException $e) {
-                    $this->logger->err('['.get_class($e).'] '.$e->getMessage());
+                    $this->logger->error('['.get_class($e).'] '.$e->getMessage());
 
                     return false;
                 }
@@ -93,7 +93,7 @@ class PackageManager
         try {
             $this->mailer->send($message);
         } catch (\Swift_TransportException $e) {
-            $this->logger->err('['.get_class($e).'] '.$e->getMessage());
+            $this->logger->error('['.get_class($e).'] '.$e->getMessage());
 
             return false;
         }

@@ -20,7 +20,7 @@ use Symfony\Component\Validator\Constraints as Assert;
  * @ORM\Entity
  * @ORM\Table(
  *     name="tag",
- *     uniqueConstraints={@ORM\UniqueConstraint(name="name_idx", columns={"name"})}
+ *     uniqueConstraints={@ORM\UniqueConstraint(name="tag_name_idx", columns={"name"})}
  * )
  * @author Jordi Boggiano <j.boggiano@seld.be>
  */
@@ -34,7 +34,7 @@ class Tag
     private $id;
 
     /**
-     * @ORM\Column
+     * @ORM\Column(length=191)
      * @Assert\NotBlank()
      */
     private $name;

@@ -12,9 +12,11 @@
 
 namespace Packagist\WebBundle\Form\Type;
 
+use Packagist\WebBundle\Form\Model\OrderBy;
 use Symfony\Component\Form\AbstractType;
+use Symfony\Component\Form\Extension\Core\Type\ChoiceType;
 use Symfony\Component\Form\FormBuilderInterface;
-use Symfony\Component\OptionsResolver\OptionsResolverInterface;
+use Symfony\Component\OptionsResolver\OptionsResolver;
 
 /**
  * @author Benjamin Michalski <benjamin.michalski@gmail.com>
@@ -24,24 +26,27 @@ class OrderByType extends AbstractType
     public function buildForm(FormBuilderInterface $builder, array $options)
     {
         $builder->add('sort');
-        $builder->add('order', 'choice', array(
+        $builder->add('order', ChoiceType::class, array(
             'choices' => array(
                 'asc' => 'asc',
                 'desc' => 'desc'
-            )
+            ),
+            'choices_as_values' => true,
         ));
     }
 
-    public function setDefaultOptions(OptionsResolverInterface $resolver)
+    public function configureOptions(OptionsResolver $resolver)
     {
         $resolver->setDefaults(array(
-            'data_class' => 'Packagist\WebBundle\Form\Model\OrderBy',
+            'data_class' => OrderBy::class,
             'csrf_protection' => false,
         ));
     }
 
-
-    public function getName()
+    /**
+     * {@inheritdoc}
+     */
+    public function getBlockPrefix()
     {
         return 'order_by';
     }

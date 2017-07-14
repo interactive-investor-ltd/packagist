@@ -11,10 +11,11 @@
 
         <link rel="shortcut icon" href="{{ asset('favicon.ico') }}" />
 
-        <link rel="stylesheet" href="//maxcdn.bootstrapcdn.com/bootstrap/3.3.4/css/bootstrap.min.css" type="text/css" />
-        <link rel="stylesheet" href="//maxcdn.bootstrapcdn.com/bootstrap/3.3.4/css/bootstrap-theme.min.css">
+        <link rel="stylesheet" href="{{ asset('libs/bootstrap-3.3.5/css/bootstrap.min.css') }}" />
+        <link rel="stylesheet" href="{{ asset('libs/bootstrap-3.3.5/css/bootstrap-theme.min.css') }}" />
         <link rel="stylesheet" href="{{ asset('bundles/packagistweb/css/main.css') }}" />
         <link rel="stylesheet" href="{{ asset('css/humane/jackedup.css') }}" />
+        {% block stylesheets %}{% endblock %}
 
         {% block head_feeds %}
         <link rel="alternate" type="application/rss+xml" title="Newly Submitted Packages - Packagist" href="{{ url('feed_packages', {_format: 'rss'}) }}" />
@@ -33,16 +34,22 @@
                 <div class="navbar" role="navigation">
                     <div class="navbar-header">
                         <button type="button" class="navbar-toggle" data-toggle="collapse" data-target=".navbar-collapse">
-                            <span class="sr-only">Toggle navigation</span>
+                            <span class="sr-only">{{ 'menu.togglenav'|trans }}</span>
                             <span class="icon-bar"></span>
                             <span class="icon-bar"></span>
                             <span class="icon-bar"></span>
                         </button>
-                        <h1 class="navbar-brand"><a href="{{ path('home') }}">Packagist</a> <em class="hidden-sm hidden-xs">The PHP Package Repository</em></h1>
+                        <h1 class="navbar-brand"><a href="{{ path('home') }}">{{ 'brandname'|trans }}</a> <em class="hidden-sm hidden-xs">{{ 'navclaim'|trans }}</em></h1>
                     </div>
 
                     <div class="collapse navbar-collapse">
                         <ul class="nav navbar-nav">
+                            <li>
+                                <a href="{{ path('browse') }}">{{ 'menu.browse'|trans }}</a>
+                            </li>
+                            <li>
+                                <a href="{{ path('submit') }}">{{ 'menu.submit'|trans }}</a>
+                            </li>
                         {%- if app.user %}
                             <li class="nav-user">
                                 <section>
@@ -55,11 +62,11 @@
                             </li>
                         {%- else %}
                             <li>
-                                <a href="{{ path('fos_user_registration_register') }}">Create account</a>
+                                <a href="{{ path('fos_user_registration_register') }}">{{ 'menu.create_account'|trans }}</a>
                             </li>
                             <li class="nav-user">
                                 <section class="nav-user-signin">
-                                    <a href="{{ path('hwi_oauth_connect') }}">Sign in</a>
+                                    <a href="{{ path('hwi_oauth_connect') }}">{{ 'menu.sign_in'|trans }}</a>
 
                                     <section class="signin-box">
                                         <form action="{{ path('login_check') }}" method="POST">
@@ -90,18 +97,12 @@
                                         </form>
 
                                         <div class="signin-box-register">
-                                            <a href="{{ path('fos_user_registration_register') }}">No account yet? Create one now!</a>
+                                            <a href="{{ path('fos_user_registration_register') }}">{{ 'signinbox.register'|trans }}</a>
                                         </div>
                                     </section>
                                 </section>
                             </li>
                         {%- endif %}
-                            <li>
-                                <a href="{{ path('browse') }}">Browse</a>
-                            </li>
-                            <li>
-                                <a href="{{ path('submit') }}">Submit</a>
-                            </li>
                         </ul>
                     </div>
                 </div>
@@ -167,19 +168,26 @@
                         <li><a href="{{ path('stats') }}">{{ 'menu.stats'|trans }}</a></li>
                         <li><a href="{{ path('browse') }}">{{ 'menu.browse_packages'|trans }}</a></li>
                     </ul>
+
+                    <div class="clearfix visible-xs-block"></div>
+
+                    <ul class="col-xs-3 col-md-2">
+                        <li><a href="{{ path('api_doc') }}">{{ 'menu.api_doc'|trans }}</a></li>
+                    </ul>
+
                 </div>
 
                 <div class="row">
-                    <p class="toran col-xs-12">Packagist maintenance and hosting is supported by <a href="https://toranproxy.com/">Toran Proxy</a></p>
+                    <p class="toran col-xs-12">Packagist maintenance and hosting is supported by <a href="https://packagist.com/">Private Packagist</a></p>
                 </div>
             </nav>
         </footer>
 
-        <script src="//code.jquery.com/jquery-2.1.0.min.js"></script>
-        <script src="{{ asset('js/libs/humane.min.js') }}"></script>
+        <script src="{{ asset('libs/jquery-2.1.4.min.js') }}"></script>
+        <script src="{{ asset('libs/humane-3.2.2.min.js') }}"></script>
         <script src="{{ asset('bundles/packagistweb/js/layout.js') }}"></script>
         <script src="{{ asset('bundles/packagistweb/js/search.js')}}"></script>
-        <script src="//maxcdn.bootstrapcdn.com/bootstrap/3.3.4/js/bootstrap.min.js"></script>
+        <script src="{{ asset('libs/bootstrap-3.3.5/js/bootstrap.min.js')}}"></script>
 
         {%- if not app.debug and google_analytics.ga_key %}
         <script>

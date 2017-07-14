@@ -16,12 +16,15 @@ class WebControllerTest extends WebTestCase
         $client = self::createClient();
 
         $crawler = $client->request('GET', '/');
-        $this->assertEquals('Getting Started', $crawler->filter('.getting-started h1')->text());
+        $this->assertEquals('Getting Started', $crawler->filter('.getting-started h2')->text());
     }
 
     public function testPackages()
     {
         $client = self::createClient();
+
+        $this->initializePackages($client->getContainer());
+
         //we expect at least one package
         $crawler = $client->request('GET', '/packages/');
         $this->assertTrue($crawler->filter('.packages li')->count() > 0);
@@ -30,9 +33,12 @@ class WebControllerTest extends WebTestCase
     public function testPackage()
     {
         $client = self::createClient();
+
+        $this->initializePackages($client->getContainer());
+
         //we expect package to be clickable and showing at least 'package' div
         $crawler = $client->request('GET', '/packages/');
-        $link = $crawler->filter('.packages li h1 a')->first()->attr('href');
+        $link = $crawler->filter('.packages li a')->first()->attr('href');
 
         $crawler = $client->request('GET', $link);
         $this->assertTrue($crawler->filter('.package')->count() > 0);
@@ -166,9 +172,9 @@ class WebControllerTest extends WebTestCase
      */
     public function testSearchOrderBysCombinationAction()
     {
-        $userMock = $this->getMock('Packagist\WebBundle\Entity\User');
-        $userMock1 = $this->getMock('Packagist\WebBundle\Entity\User');
-        $userMock2 = $this->getMock('Packagist\WebBundle\Entity\User');
+        $userMock = $this->createMock('Packagist\WebBundle\Entity\User');
+        $userMock1 = $this->createMock('Packagist\WebBundle\Entity\User');
+        $userMock2 = $this->createMock('Packagist\WebBundle\Entity\User');
 
         $userMock->method('getId')->will($this->returnValue(1));
         $userMock1->method('getId')->will($this->returnValue(2));
@@ -190,13 +196,13 @@ class WebControllerTest extends WebTestCase
                 /* @var $downloadManager DownloadManager */
 
                 for ($i = 0; $i < 25; $i += 1) {
-                    $downloadManager->addDownload($twigPackage->getId(), 25);
+                    $downloadManager->addDownloads([['id' => $twigPackage->getId(), 'vid' => 25, 'ip' => '127.0.0.'.random_int(0,255)]]);
                 }
                 for ($i = 0; $i < 12; $i += 1) {
-                    $downloadManager->addDownload($packagistPackage->getId(), 12);
+                    $downloadManager->addDownloads([['id' => $packagistPackage->getId(), 'vid' => 12, 'ip' => '127.0.0.'.random_int(0,255)]]);
                 }
                 for ($i = 0; $i < 25; $i += 1) {
-                    $downloadManager->addDownload($symfonyPackage->getId(), 42);
+                    $downloadManager->addDownloads([['id' => $symfonyPackage->getId(), 'vid' => 42, 'ip' => '127.0.0.'.random_int(0,255)]]);
                 }
 
                 $favoriteManager = $container->get('packagist.favorite_manager');
@@ -234,13 +240,13 @@ class WebControllerTest extends WebTestCase
     }
 
     /**
-     * @param callable $onBeforeIndex TODO Add typehint when migrating to 5.4+
+     * @param callable $onBeforeIndex
      * @param array $orderBys
      *
      * @return array
      */
     protected function commonTestSearchActionOrderBysAction(
-        $onBeforeIndex,
+        callable $onBeforeIndex,
         array $orderBys = array()
     ) {
         $client = self::createClient();
@@ -258,7 +264,7 @@ class WebControllerTest extends WebTestCase
 
         $this->executeCommand('rm -f ' . $lock);
 
-        $em = $container->get('doctrine')->getManager();
+        list($twigPackage, $packagistPackage, $symfonyPackage) = $this->initializePackages($container);
 
         if (!empty($orderBys)) {
             $orderBysQryStrPart = '&' . http_build_query(
@@ -269,6 +275,32 @@ class WebControllerTest extends WebTestCase
         } else {
             $orderBysQryStrPart = '';
         }
+
+        $onBeforeIndex($container, $twigPackage, $packagistPackage, $symfonyPackage);
+
+        $this->executeCommand('php '.$kernelRootDir . '/console packagist:index --env=test --force');
+
+        $client->request('GET', '/search.json?q=' . $orderBysQryStrPart);
+
+        $response = $client->getResponse();
+
+        $content = $client->getResponse()->getContent();
+
+        $this->assertSame(200, $response->getStatusCode(), $content);
+
+        return json_decode($content, true);
+    }
+
+    protected function initializePackages(ContainerInterface $container)
+    {
+        $kernelRootDir = $container->getParameter('kernel.root_dir');
+
+        $this->executeCommand('php '.$kernelRootDir . '/console doctrine:database:drop --env=test --force', false);
+        $this->executeCommand('php '.$kernelRootDir . '/console doctrine:database:create --env=test');
+        $this->executeCommand('php '.$kernelRootDir . '/console doctrine:schema:create --env=test');
+        $this->executeCommand('php '.$kernelRootDir . '/console redis:flushall --env=test -n');
+
+        $em = $container->get('doctrine')->getManager();
 
         $twigPackage = new Package();
 
@@ -291,19 +323,7 @@ class WebControllerTest extends WebTestCase
 
         $em->flush();
 
-        $onBeforeIndex($container, $twigPackage, $packagistPackage, $symfonyPackage);
-
-        $this->executeCommand('php '.$kernelRootDir . '/console packagist:index --env=test --force');
-
-        $client->request('GET', '/search.json?q=' . $orderBysQryStrPart);
-
-        $response = $client->getResponse();
-
-        $content = $client->getResponse()->getContent();
-
-        $this->assertSame(200, $response->getStatusCode(), $content);
-
-        return json_decode($content, true);
+        return [$twigPackage, $packagistPackage, $symfonyPackage];
     }
 
     /**
@@ -326,13 +346,13 @@ class WebControllerTest extends WebTestCase
                 /* @var $downloadManager DownloadManager */
 
                 for ($i = 0; $i < 25; $i += 1) {
-                    $downloadManager->addDownload($twigPackage->getId(), 25);
+                    $downloadManager->addDownloads([['id' => $twigPackage->getId(), 'vid' => 25, 'ip' => '127.0.0.'.random_int(0,255)]]);
                 }
                 for ($i = 0; $i < 12; $i += 1) {
-                    $downloadManager->addDownload($packagistPackage->getId(), 12);
+                    $downloadManager->addDownloads([['id' => $packagistPackage->getId(), 'vid' => 12, 'ip' => '127.0.0.'.random_int(0,255)]]);
                 }
                 for ($i = 0; $i < 42; $i += 1) {
-                    $downloadManager->addDownload($symfonyPackage->getId(), 42);
+                    $downloadManager->addDownloads([['id' => $symfonyPackage->getId(), 'vid' => 42, 'ip' => '127.0.0.'.random_int(0,255)]]);
                 }
             },
             $orderBys
@@ -347,9 +367,9 @@ class WebControllerTest extends WebTestCase
     protected function commonTestSearchActionOrderBysFavers(
         array $orderBys = array()
     ) {
-        $userMock = $this->getMock('Packagist\WebBundle\Entity\User');
-        $userMock1 = $this->getMock('Packagist\WebBundle\Entity\User');
-        $userMock2 = $this->getMock('Packagist\WebBundle\Entity\User');
+        $userMock = $this->createMock('Packagist\WebBundle\Entity\User');
+        $userMock1 = $this->createMock('Packagist\WebBundle\Entity\User');
+        $userMock2 = $this->createMock('Packagist\WebBundle\Entity\User');
 
         $userMock->method('getId')->will($this->returnValue(1));
         $userMock1->method('getId')->will($this->returnValue(2));

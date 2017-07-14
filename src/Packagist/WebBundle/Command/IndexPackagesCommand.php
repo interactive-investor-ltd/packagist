@@ -21,6 +21,8 @@ use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
+use Symfony\Component\Filesystem\LockHandler;
+use Doctrine\DBAL\Connection;
 
 /**
  * @author Igor Wiedler <igor@wiedler.ch>
@@ -67,18 +69,15 @@ class IndexPackagesCommand extends ContainerAwareCommand
         $downloadManager = $this->getContainer()->get('packagist.download_manager');
         $favoriteManager = $this->getContainer()->get('packagist.favorite_manager');
 
-        $lock = $this->getContainer()->getParameter('kernel.cache_dir').'/composer-indexer.lock';
-        $timeout = 600;
+        $lock = new LockHandler('packagist_package_indexer');
 
         // another dumper is still active
-        if (file_exists($lock) && filemtime($lock) > time() - $timeout) {
+        if (!$lock->lock()) {
             if ($verbose) {
-                $output->writeln('Aborting, '.$lock.' file present');
+                $output->writeln('Aborting, another indexer is still active');
             }
             return;
         }
-
-        touch($lock);
 
         if ($package) {
             $packages = array(array('id' => $doctrine->getRepository('PackagistWebBundle:Package')->findOneByName($package)->getId()));
@@ -112,8 +111,12 @@ class IndexPackagesCommand extends ContainerAwareCommand
 
         // update package index
         while ($ids) {
-            $packages = $doctrine->getRepository('PackagistWebBundle:Package')->getPackagesWithVersions(array_splice($ids, 0, 50));
+            $indexTime = new \DateTime;
+            $idsSlice = array_splice($ids, 0, 50);
+            $packages = $doctrine->getRepository('PackagistWebBundle:Package')->findById($idsSlice);
             $update = $solarium->createUpdate();
+
+            $idsToUpdate = [];
 
             foreach ($packages as $package) {
                 $current++;
@@ -123,61 +126,109 @@ class IndexPackagesCommand extends ContainerAwareCommand
 
                 try {
                     $document = $update->createDocument();
-                    $this->updateDocumentFromPackage($document, $package, $redis, $downloadManager, $favoriteManager);
+                    $tags = $doctrine->getManager()->getConnection()->fetchAll(
+                        'SELECT t.name FROM package p
+                            JOIN package_version pv ON p.id = pv.package_id
+                            JOIN version_tag vt ON vt.version_id = pv.id
+                            JOIN tag t ON t.id = vt.tag_id
+                            WHERE p.id = :id
+                            GROUP BY t.id, t.name',
+                        ['id' => $package->getId()]
+                    );
+                    foreach ($tags as $idx => $tag) {
+                        $tags[$idx] = $tag['name'];
+                    }
+                    $this->updateDocumentFromPackage($document, $package, $tags, $redis, $downloadManager, $favoriteManager);
                     $update->addDocument($document);
 
-                    $package->setIndexedAt(new \DateTime);
+                    $idsToUpdate[] = $package->getId();
                 } catch (\Exception $e) {
                     $output->writeln('<error>Exception: '.$e->getMessage().', skipping package '.$package->getName().'.</error>');
+
+                    continue;
                 }
 
-                foreach ($package->getVersions() as $version) {
-                    // abort when a non-dev version shows up since dev ones are ordered first
-                    if (!$version->isDevelopment()) {
-                        break;
-                    }
-                    if (count($provide = $version->getProvide())) {
-                        foreach ($version->getProvide() as $provide) {
-                            try {
-                                $document = $update->createDocument();
-                                $document->setField('id', $provide->getPackageName());
-                                $document->setField('name', $provide->getPackageName());
-                                $document->setField('description', '');
-                                $document->setField('type', 'virtual-package');
-                                $document->setField('trendiness', 100);
-                                $document->setField('repository', '');
-                                $document->setField('abandoned', 0);
-                                $document->setField('replacementPackage', '');
-                                $update->addDocument($document);
-                            } catch (\Exception $e) {
-                                $output->writeln('<error>'.get_class($e).': '.$e->getMessage().', skipping package '.$package->getName().':provide:'.$provide->getPackageName().'</error>');
-                            }
-                        }
+                $providers = $doctrine->getManager()->getConnection()->fetchAll(
+                    'SELECT lp.packageName
+                        FROM package p
+                        JOIN package_version pv ON p.id = pv.package_id
+                        JOIN link_provide lp ON lp.version_id = pv.id
+                        WHERE p.id = :id
+                        AND pv.development = true
+                        GROUP BY lp.packageName',
+                    ['id' => $package->getId()]
+                );
+                foreach ($providers as $provided) {
+                    $provided = $provided['packageName'];
+                    try {
+                        $document = $update->createDocument();
+                        $document->setField('id', $provided);
+                        $document->setField('name', $provided);
+                        $document->setField('package_name', '');
+                        $document->setField('description', '');
+                        $document->setField('type', 'virtual-package');
+                        $document->setField('trendiness', 100);
+                        $document->setField('repository', '');
+                        $document->setField('abandoned', 0);
+                        $document->setField('replacementPackage', '');
+                        $update->addDocument($document);
+                    } catch (\Exception $e) {
+                        $output->writeln('<error>'.get_class($e).': '.$e->getMessage().', skipping package '.$package->getName().':provide:'.$provided.'</error>');
                     }
                 }
             }
 
-            $doctrine->getManager()->flush();
+            try {
+                $update->addCommit();
+                $solarium->update($update);
+            } catch (\Exception $e) {
+                $output->writeln('<error>'.get_class($e).': '.$e->getMessage().', occurred while processing packages: '.implode(',', $idsSlice).'</error>');
+                continue;
+            }
+
             $doctrine->getManager()->clear();
             unset($packages);
 
-            $update->addCommit();
-            $solarium->update($update);
+            if ($verbose) {
+                $output->writeln('Updating package index times');
+            }
+
+            $retries = 5;
+            // retry loop in case of a lock timeout
+            while ($retries--) {
+                try {
+                    $doctrine->getManager()->getConnection()->executeQuery(
+                        'UPDATE package SET indexedAt=:indexed WHERE id IN (:ids)',
+                        [
+                            'ids' => $idsToUpdate,
+                            'indexed' => $indexTime->format('Y-m-d H:i:s'),
+                        ],
+                        ['ids' => Connection::PARAM_INT_ARRAY]
+                    );
+                } catch (\Exception $e) {
+                    if (!$retries) {
+                        throw $e;
+                    }
+                    sleep(2);
+                }
+            }
         }
 
-        unlink($lock);
+        $lock->release();
     }
 
     private function updateDocumentFromPackage(
         Solarium_Document_ReadWrite $document,
         Package $package,
+        array $tags,
         $redis,
         DownloadManager $downloadManager,
         FavoriteManager $favoriteManager
     ) {
         $document->setField('id', $package->getId());
         $document->setField('name', $package->getName());
-        $document->setField('description', $package->getDescription());
+        $document->setField('package_name', $package->getPackageName());
+        $document->setField('description', preg_replace('{[\x00-\x1f]+}u', '', $package->getDescription()));
         $document->setField('type', $package->getType());
         $document->setField('trendiness', $redis->zscore('downloads:trending', $package->getId()));
         $document->setField('downloads', $downloadManager->getTotalDownloads($package));
@@ -192,12 +243,9 @@ class IndexPackagesCommand extends ContainerAwareCommand
             $document->setField('replacementPackage', '');
         }
 
-        $tags = array();
-        foreach ($package->getVersions() as $version) {
-            foreach ($version->getTags() as $tag) {
-                $tags[mb_strtolower($tag->getName(), 'UTF-8')] = true;
-            }
-        }
-        $document->setField('tags', array_keys($tags));
+        $tags = array_map(function ($tag) {
+            return mb_strtolower(preg_replace('{[\x00-\x1f]+}u', '', $tag), 'UTF-8');
+        }, $tags);
+        $document->setField('tags', $tags);
     }
 }

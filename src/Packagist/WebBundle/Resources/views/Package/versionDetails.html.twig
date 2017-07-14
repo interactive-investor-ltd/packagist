@@ -8,7 +8,7 @@
     </span>
 
     <span class="release-date">{{ version.releasedAt|date("Y-m-d H:i") }} UTC</span>
-</div class="version-number">
+</div>
 
 <div class="clearfix package-links">
     {% for types in [["require", "devRequire", "suggest", "provide", "conflict", "replace"]] %}
@@ -47,8 +47,7 @@
                         {{ author.name }}
                     {%- endif -%}
                     {% if author.email %}
-                        <span class="visible-sm-inline visible-md-inline visible-lg-inline">&lt;<a href="mailto:{{ author.email }}">{{ author.email }}</a>&gt;</span>
-                        <span class="visible-xs-inline"><a href="mailto:{{ author.email }}"><i class="glyphicon glyphicon-envelope"></i></a></span>
+                        <span class="visible-sm-inline visible-md-inline visible-lg-inline">&lt;{{ author.email|split('@', 2)[0] }}<span style="display:none">.woop</span>@{{ author.email|split('@', 2)[1] }}&gt;</span>
                     {%- endif -%}
                 </li>
             {% endfor %}
@@ -57,7 +56,7 @@
 
     {% if version.tags|length %}
         <p class="tags">
-            <i class="glyphicon glyphicon-tag" title="Authors"></i>
+            <i class="glyphicon glyphicon-tag" title="Tags"></i>
             {% for tag in version.tags -%}
                 <a href="{{ url("search", {tags: tag.name}) }}">{{ tag.name }}</a>
             {%- endfor -%}

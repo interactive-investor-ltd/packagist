@@ -10,13 +10,13 @@
 
         <section class="col-md-6">
             <h3 id="community">Community</h3>
-            <p>If you have questions about composer or want to help out, come and join us in the <em><a href="irc://irc.freenode.net/#composer">#composer</a></em> channel on irc.freenode.net. You can find more community resources in the <a href="https://getcomposer.org/doc/06-community.md">Composer documentation</a>.</p>
+            <p>If you have questions about composer or want to help out, come and join us in the <em><a href="irc://irc.freenode.net/composer">#composer</a></em> channel on irc.freenode.net. You can find more community resources in the <a href="https://getcomposer.org/doc/07-community.md">Composer documentation</a>.</p>
         </section>
 
         <section class="col-md-6">
             <h3 id="community">Contributing / Donating</h3>
             <p>To report issues or contribute code you can find the source repository on <a href="https://github.com/composer/packagist">GitHub</a>.</p>
-            <p>If you would like to financially support the hosting and maintenance of the project, the best way is to check out <a href="https://toranproxy.com">Toran Proxy</a> and buy a license. It can help you install packages fast and reliably, provides you with a private package repository, and the money goes towards Composer and Packagist maintenance!</p>
+            <p>If you would like to financially support the hosting and maintenance of the project, the best way is to check out and use <a href="https://packagist.com">Private Packagist</a>. It can help you install packages fast and reliably, provides you with a private package repository, and the money goes towards Composer and Packagist maintenance!</p>
         </section>
     </section>
 
@@ -91,8 +91,45 @@ v2.0.4-p1</code></pre>
             <h3 id="update-schedule">Update Schedule</h3>
             <p>New packages will be crawled <strong>immediately</strong> after submission if you have JS enabled.</p>
             <p>Existing packages without auto-updating (GitHub/BitBucket hook) will be crawled <strong>once a week</strong> for updates. When a hook is enabled packages are crawled whenever you push, or at least once a month in case the crawl failed. You can also trigger a manual update on your package page if you are logged-in as a maintainer.</p>
-            <p>It is highly recommended to set up the <strong>GitHub/BitBucket service hook</strong> for all your packages. This reduces the load on our side, and ensures your package is updated almost instantly. Check the how-to in your <a href="{{ path('fos_user_profile_show') }}">profile</a> page.</p>
+            <p>It is highly recommended to set up the <strong>GitHub/BitBucket service hook</strong> for all your packages. This reduces the load on our side, and ensures your package is updated almost instantly. Check the how-to <a href="#how-to-update-packages">below</a>.</p>
             <p>The search index is updated <strong>every five minutes</strong>. It will index (or reindex) any package that has been crawled since the last time the search indexer ran.</p>
+        </section>
+    </section>
+
+    <div class="clearfix"></div>
+
+    <h2 class="title" id="how-to-update-packages">How to update packages?</h2>
+    <section class="row">
+        <section class="col-md-6">
+            <h3>GitHub Service Hook</h3>
+            <p>Enabling the Packagist service hook ensures that your package will always be updated instantly when you push to GitHub.</p>
+            <p>To do so you can:</p>
+            <ul>
+                <li>Go to your GitHub repository</li>
+                <li>Click the "Settings" button</li>
+                <li>Click "Integrations &amp; services"</li>
+                <li>Add a "Packagist" service, and configure it with your API token, plus your Packagist username</li>
+                <li>Check the "Active" box and submit the form</li>
+            </ul>
+            <p>You can then hit the "Test Service" button to trigger it and check if Packagist removes the warning about the package not being auto-updated.</p>
+        </section>
+
+        <section class="col-md-6">
+            <h3>Bitbucket Webhooks</h3>
+            <p>To enable the Bitbucket web hook, go to your BitBucket repository, open the settings and select "Webhooks" in the menu. Add a new hook. You have to enter the Packagist endpoint, containing both your username and API token. Enter <code>https://packagist.org/api/bitbucket?username={{ app.user.username|default('USERNAME') }}&amp;apiToken=API_TOKEN</code> as URL. Save your changes and you're done.</p>
+        </section>
+
+        <div class="clearfix"></div>
+        <section class="col-md-6">
+            <h3>Manual hook setup</h3>
+            <p>If you do not use Bitbucket or GitHub there is a generic endpoint you can call manually from a git post-receive hook or similar. You have to do a <code>POST</code> request to <code>https://packagist.org/api/update-package?username={{ app.user.username|default('USERNAME') }}&amp;apiToken=API_TOKEN</code> with a request body looking like this: <code>{"repository":{"url":"PACKAGIST_PACKAGE_URL"}}</code></p>
+            <p>You can do this using curl for example:</p>
+            <pre>curl -XPOST -H'content-type:application/json' 'https://packagist.org/api/update-package?username={{ app.user.username|default('USERNAME') }}&amp;apiToken=API_TOKEN' -d'{"repository":{"url":"PACKAGIST_PACKAGE_URL"}}'</pre>
+        </section>
+
+        <section class="col-md-6">
+            <h3>API Token</h3>
+            <p>You can find your API token on <a href="{{ path('fos_user_profile_show') }}">your profile page</a>.</p>
         </section>
     </section>
 {% endblock %}

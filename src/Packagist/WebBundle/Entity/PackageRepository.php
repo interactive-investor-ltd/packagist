@@ -14,101 +14,13 @@ namespace Packagist\WebBundle\Entity;
 
 use Doctrine\ORM\EntityRepository;
 use Doctrine\ORM\QueryBuilder;
+use Doctrine\DBAL\Cache\QueryCacheProfile;
 
 /**
  * @author Jordi Boggiano <j.boggiano@seld.be>
  */
 class PackageRepository extends EntityRepository
 {
-    /**
-     * Lists all package names array(name => true)
-     *
-     * @var array
-     */
-    private $packageNames;
-
-    /**
-     * Lists all provided names array(name => true)
-     *
-     * @var array
-     */
-    private $providedNames;
-
-    public function packageExists($name)
-    {
-        $packages = $this->getRawPackageNames();
-
-        return isset($packages[$name]) || in_array(strtolower($name), $packages, true);
-    }
-
-    public function packageIsProvided($name)
-    {
-        $packages = $this->getProvidedNames();
-
-        return isset($packages[$name]) || in_array(strtolower($name), $packages, true);
-    }
-
-    public function getPackageNames($fields = array())
-    {
-        return array_keys($this->getRawPackageNames());
-    }
-
-    public function getRawPackageNames()
-    {
-        if (null !== $this->packageNames) {
-            return $this->packageNames;
-        }
-
-        $names = null;
-        $apc = extension_loaded('apc');
-
-        // TODO use container to set caching key and ttl
-        if ($apc) {
-            $names = apc_fetch('packagist_package_names');
-        }
-
-        if (!is_array($names)) {
-            $query = $this->getEntityManager()
-                ->createQuery("SELECT p.name FROM Packagist\WebBundle\Entity\Package p");
-
-            $names = $this->getPackageNamesForQuery($query);
-            $names = array_combine($names, array_map('strtolower', $names));
-            if ($apc) {
-                apc_store('packagist_package_names', $names, 3600);
-            }
-        }
-
-        return $this->packageNames = $names;
-    }
-
-    public function getProvidedNames()
-    {
-        if (null !== $this->providedNames) {
-            return $this->providedNames;
-        }
-
-        $names = null;
-        $apc = extension_loaded('apc');
-
-        // TODO use container to set caching key and ttl
-        if ($apc) {
-            $names = apc_fetch('packagist_provided_names');
-        }
-
-        if (!is_array($names)) {
-            $query = $this->getEntityManager()
-                ->createQuery("SELECT p.packageName AS name FROM Packagist\WebBundle\Entity\ProvideLink p GROUP BY p.packageName");
-
-            $names = $this->getPackageNamesForQuery($query);
-            $names = array_combine($names, array_map('strtolower', $names));
-            if ($apc) {
-                apc_store('packagist_provided_names', $names, 3600);
-            }
-        }
-
-        return $this->providedNames = $names;
-    }
-
     public function findProviders($name)
     {
         $query = $this->createQueryBuilder('p')
@@ -117,11 +29,35 @@ class PackageRepository extends EntityRepository
             ->leftJoin('pv.provide', 'pr')
             ->where('pv.development = true')
             ->andWhere('pr.packageName = :name')
-            ->groupBy('p.name')
+            ->orderBy('p.name')
             ->getQuery()
             ->setParameters(array('name' => $name));
 
         return $query->getResult();
+    }
+
+    public function getPackageNames()
+    {
+        $query = $this->getEntityManager()
+            ->createQuery("SELECT p.name FROM Packagist\WebBundle\Entity\Package p");
+
+        $names = $this->getPackageNamesForQuery($query);
+
+        return array_map('strtolower', $names);
+    }
+
+    public function getProvidedNames()
+    {
+        $query = $this->getEntityManager()
+            ->createQuery("SELECT p.packageName AS name
+                FROM Packagist\WebBundle\Entity\ProvideLink p
+                LEFT JOIN p.version v
+                WHERE v.development = true
+                GROUP BY p.packageName");
+
+        $names = $this->getPackageNamesForQuery($query);
+
+        return array_map('strtolower', $names);
     }
 
     public function getPackageNamesByType($type)
@@ -269,7 +205,7 @@ class PackageRepository extends EntityRepository
         return $qb->getQuery()->getResult();
     }
 
-    public function getFilteredQueryBuilder(array $filters = array())
+    public function getFilteredQueryBuilder(array $filters = array(), $orderByName = false)
     {
         $qb = $this->getEntityManager()->createQueryBuilder();
         $qb->select('p')
@@ -280,7 +216,12 @@ class PackageRepository extends EntityRepository
             $qb->leftJoin('v.tags', 't');
         }
 
-        $qb->orderBy('p.id', 'DESC');
+        $qb->orderBy('p.abandoned');
+        if (true === $orderByName) {
+            $qb->addOrderBy('p.name');
+        } else {
+            $qb->addOrderBy('p.id', 'DESC');
+        }
 
         $this->addFilters($qb, $filters);
 
@@ -311,6 +252,81 @@ class PackageRepository extends EntityRepository
         return true;
     }
 
+    public function getDependentCount($name)
+    {
+        $sql = 'SELECT COUNT(*) count FROM (
+                SELECT pv.package_id FROM link_require r INNER JOIN package_version pv ON (pv.id = r.version_id AND pv.development = 1) WHERE r.packageName = :name
+                UNION
+                SELECT pv.package_id FROM link_require_dev r INNER JOIN package_version pv ON (pv.id = r.version_id AND pv.development = 1) WHERE r.packageName = :name
+            ) x';
+
+        $stmt = $this->getEntityManager()->getConnection()
+            ->executeCacheQuery($sql, ['name' => $name], [], new QueryCacheProfile(7*86400, 'dependents_count_'.$name, $this->getEntityManager()->getConfiguration()->getResultCacheImpl()));
+        $result = $stmt->fetchAll();
+        $stmt->closeCursor();
+
+        return (int) $result[0]['count'];
+    }
+
+    public function getDependents($name, $offset = 0, $limit = 15)
+    {
+        $sql = 'SELECT p.id, p.name, p.description, p.language, p.abandoned, p.replacementPackage
+            FROM package p INNER JOIN (
+                SELECT pv.package_id FROM link_require r INNER JOIN package_version pv ON (pv.id = r.version_id AND pv.development = 1) WHERE r.packageName = :name
+                UNION
+                SELECT pv.package_id FROM link_require_dev r INNER JOIN package_version pv ON (pv.id = r.version_id AND pv.development = 1) WHERE r.packageName = :name
+            ) x ON x.package_id = p.id ORDER BY p.name ASC LIMIT '.((int)$limit).' OFFSET '.((int)$offset);
+
+        $stmt = $this->getEntityManager()->getConnection()
+            ->executeCacheQuery(
+                $sql,
+                ['name' => $name],
+                [],
+                new QueryCacheProfile(7*86400, 'dependents_'.$name.'_'.$offset.'_'.$limit, $this->getEntityManager()->getConfiguration()->getResultCacheImpl())
+            );
+        $result = $stmt->fetchAll();
+        $stmt->closeCursor();
+
+        return $result;
+    }
+
+    public function getSuggestCount($name)
+    {
+        $sql = 'SELECT COUNT(DISTINCT pv.package_id) count
+            FROM link_suggest s
+            INNER JOIN package_version pv ON (pv.id = s.version_id AND pv.development = 1)
+            WHERE s.packageName = :name';
+
+        $stmt = $this->getEntityManager()->getConnection()
+            ->executeCacheQuery($sql, ['name' => $name], [], new QueryCacheProfile(7*86400, 'suggesters_count_'.$name, $this->getEntityManager()->getConfiguration()->getResultCacheImpl()));
+        $result = $stmt->fetchAll();
+        $stmt->closeCursor();
+
+        return (int) $result[0]['count'];
+    }
+
+    public function getSuggests($name, $offset = 0, $limit = 15)
+    {
+        $sql = 'SELECT p.id, p.name, p.description, p.language, p.abandoned, p.replacementPackage
+            FROM link_suggest s
+            INNER JOIN package_version pv ON (pv.id = s.version_id AND pv.development = 1)
+            INNER JOIN package p ON (p.id = pv.package_id)
+            WHERE s.packageName = :name
+            GROUP BY pv.package_id
+            ORDER BY p.name ASC LIMIT '.((int)$limit).' OFFSET '.((int)$offset);
+
+        $stmt = $this->getEntityManager()->getConnection()
+            ->executeCacheQuery(
+                $sql,
+                ['name' => $name],
+                [],
+                new QueryCacheProfile(7*86400, 'suggesters_'.$name.'_'.$offset.'_'.$limit, $this->getEntityManager()->getConfiguration()->getResultCacheImpl())
+            );
+        $result = $stmt->fetchAll();
+        $stmt->closeCursor();
+
+        return $result;
+    }
 
     private function addFilters(QueryBuilder $qb, array $filters)
     {
@@ -327,6 +343,10 @@ class PackageRepository extends EntityRepository
                 case 'maintainer':
                     $qb->leftJoin('p.maintainers', 'm');
                     $qb->andWhere($qb->expr()->in('m.id', ':'.$name));
+                    break;
+
+                case 'vendor':
+                    $qb->andWhere('p.name LIKE :vendor');
                     break;
 
                 default:

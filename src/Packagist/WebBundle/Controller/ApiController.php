@@ -12,6 +12,7 @@
 
 namespace Packagist\WebBundle\Controller;
 
+use Composer\Console\HtmlOutputFormatter;
 use Composer\Factory;
 use Composer\IO\BufferIO;
 use Composer\Package\Loader\ArrayLoader;
@@ -20,10 +21,8 @@ use Composer\Repository\InvalidRepositoryException;
 use Composer\Repository\VcsRepository;
 use Packagist\WebBundle\Entity\Package;
 use Packagist\WebBundle\Entity\User;
-use Packagist\WebBundle\Package\Updater;
 use Sensio\Bundle\FrameworkExtraBundle\Configuration\Method;
 use Sensio\Bundle\FrameworkExtraBundle\Configuration\Route;
-use Sensio\Bundle\FrameworkExtraBundle\Configuration\Template;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -35,10 +34,10 @@ use Symfony\Component\HttpFoundation\Response;
 class ApiController extends Controller
 {
     /**
-     * @Template()
      * @Route("/packages.json", name="packages", defaults={"_format" = "json"})
+     * @Method({"GET"})
      */
-    public function packagesAction(Request $req)
+    public function packagesAction()
     {
         // fallback if any of the dumped files exist
         $rootJson = $this->container->getParameter('kernel.root_dir').'/../web/packages_root.json';
@@ -53,6 +52,43 @@ class ApiController extends Controller
         $this->get('logger')->alert('packages.json is missing and the fallback controller is being hit, you need to use app/console packagist:dump');
 
         return new Response('Horrible misconfiguration or the dumper script messed up, you need to use app/console packagist:dump', 404);
+    }
+
+    /**
+     * @Route("/api/create-package", name="generic_create", defaults={"_format" = "json"})
+     * @Method({"POST"})
+     */
+    public function createPackageAction(Request $request)
+    {
+        $payload = json_decode($request->getContent(), true);
+        if (!$payload) {
+            return new JsonResponse(array('status' => 'error', 'message' => 'Missing payload parameter'), 406);
+        }
+        $url = $payload['repository']['url'];
+        $package = new Package;
+        $package->setEntityRepository($this->getDoctrine()->getRepository('PackagistWebBundle:Package'));
+        $package->setRouter($this->get('router'));
+        $user = $this->findUser($request);
+        $package->addMaintainer($user);
+        $package->setRepository($url);
+        $errors = $this->get('validator')->validate($package);
+        if (count($errors) > 0) {
+            $errorArray = array();
+            foreach ($errors as $error) {
+                $errorArray[$error->getPropertyPath()] =  $error->getMessage();
+            }
+            return new JsonResponse(array('status' => 'error', 'message' => $errorArray), 406);
+        }
+        try {
+            $em = $this->getDoctrine()->getManager();
+            $em->persist($package);
+            $em->flush();
+        } catch (\Exception $e) {
+            $this->get('logger')->critical($e->getMessage(), array('exception', $e));
+            return new JsonResponse(array('status' => 'error', 'message' => 'Error saving package'), 500);
+        }
+
+        return new JsonResponse(array('status' => 'success'), 202);
     }
 
     /**
@@ -73,10 +109,17 @@ class ApiController extends Controller
             return new JsonResponse(array('status' => 'error', 'message' => 'Missing payload parameter'), 406);
         }
 
-        if (isset($payload['repository']['url'])) { // github/gitlab/anything hook
-            $urlRegex = '{^(?:https?://|git://|git@)?(?P<host>[a-z0-9.-]+)[:/](?P<path>[\w.-]+/[\w.-]+?)(?:\.git)?$}i';
+        if (isset($payload['repository']['url'])) { // github/anything hook
+            $urlRegex = '{^(?:ssh://git@|https?://|git://|git@)?(?P<host>[a-z0-9.-]+)(?::[0-9]+/|[:/])(?P<path>[\w.-]+(?:/[\w.-]+?)+)(?:\.git|/)?$}i';
             $url = $payload['repository']['url'];
-        } elseif (isset($payload['canon_url']) && isset($payload['repository']['absolute_url'])) { // bitbucket hook
+            $url = str_replace('https://api.github.com/repos', 'https://github.com', $url);
+        } elseif (isset($payload['project']['git_http_url'])) { // gitlab event payload
+            $urlRegex = '{^(?:ssh://git@|https?://|git://|git@)?(?P<host>[a-z0-9.-]+)(?::[0-9]+/|[:/])(?P<path>[\w.-]+(?:/[\w.-]+?)+)(?:\.git|/)?$}i';
+            $url = $payload['project']['git_http_url'];
+        } elseif (isset($payload['repository']['links']['html']['href'])) { // bitbucket push event payload
+            $urlRegex = '{^(?:https?://|git://|git@)?(?:api\.)?(?P<host>bitbucket\.org)[/:](?P<path>[\w.-]+/[\w.-]+?)(\.git)?/?$}i';
+            $url = $payload['repository']['links']['html']['href'];
+        } elseif (isset($payload['canon_url']) && isset($payload['repository']['absolute_url'])) { // bitbucket post hook (deprecated)
             $urlRegex = '{^(?:https?://|git://|git@)?(?P<host>bitbucket\.org)[/:](?P<path>[\w.-]+/[\w.-]+?)(\.git)?/?$}i';
             $url = $payload['canon_url'].$payload['repository']['absolute_url'];
         } else {
@@ -98,7 +141,7 @@ class ApiController extends Controller
             return new JsonResponse(array('status' => 'error', 'message' => 'Package not found'), 200);
         }
 
-        $this->trackDownload($result['id'], $result['vid'], $request->getClientIp());
+        $this->get('packagist.download_manager')->addDownloads(['id' => $result['id'], 'vid' => $result['vid'], 'ip' => $request->getClientIp()]);
 
         return new JsonResponse(array('status' => 'success'), 201);
     }
@@ -126,6 +169,13 @@ class ApiController extends Controller
         }
 
         $failed = array();
+
+        $ip = $request->headers->get('X-'.$this->container->getParameter('trusted_ip_header'));
+        if (!$ip) {
+            $ip = $request->getClientIp();
+        }
+
+        $jobs = [];
         foreach ($contents['downloads'] as $package) {
             $result = $this->getPackageAndVersionId($package['name'], $package['version']);
 
@@ -134,8 +184,9 @@ class ApiController extends Controller
                 continue;
             }
 
-            $this->trackDownload($result['id'], $result['vid'], $request->getClientIp());
+            $jobs[] = ['id' => $result['id'], 'vid' => $result['vid'], 'ip' => $ip];
         }
+        $this->get('packagist.download_manager')->addDownloads($jobs);
 
         if ($failed) {
             return new JsonResponse(array('status' => 'partial', 'message' => 'Packages '.json_encode($failed).' not found'), 200);
@@ -144,6 +195,11 @@ class ApiController extends Controller
         return new JsonResponse(array('status' => 'success'), 201);
     }
 
+    /**
+     * @param string $name
+     * @param string $version
+     * @return array
+     */
     protected function getPackageAndVersionId($name, $version)
     {
         return $this->get('doctrine.dbal.default_connection')->fetchAssoc(
@@ -155,21 +211,6 @@ class ApiController extends Controller
             LIMIT 1',
             array($name, $version)
         );
-    }
-
-    protected function trackDownload($id, $vid, $ip)
-    {
-        $redis = $this->get('snc_redis.default');
-        $manager = $this->get('packagist.download_manager');
-
-        $throttleKey = 'dl:'.$id.':'.$ip.':'.date('Ymd');
-        $requests = $redis->incr($throttleKey);
-        if (1 === $requests) {
-            $redis->expire($throttleKey, 86400);
-        }
-        if ($requests <= 10) {
-            $manager->addDownload($id, $vid);
-        }
     }
 
     /**
@@ -208,10 +249,11 @@ class ApiController extends Controller
         $em = $this->get('doctrine.orm.entity_manager');
         $updater = $this->get('packagist.package_updater');
         $config = Factory::createConfig();
-        $io = new BufferIO('', OutputInterface::VERBOSITY_VERBOSE);
+        $io = new BufferIO('', OutputInterface::VERBOSITY_VERY_VERBOSE, new HtmlOutputFormatter(Factory::createAdditionalStyles()));
         $io->loadConfiguration($config);
 
         try {
+            /** @var Package $package */
             foreach ($packages as $package) {
                 $em->transactional(function($em) use ($package, $updater, $io, $config) {
                     // prepare dependencies
@@ -226,13 +268,15 @@ class ApiController extends Controller
 
                     // update the package entity
                     $package->setAutoUpdated(true);
-                    $em->flush();
+                    $em->flush($package);
                 });
             }
         } catch (\Exception $e) {
             if ($e instanceof InvalidRepositoryException) {
                 $this->get('packagist.package_manager')->notifyUpdateFailure($package, $e, $io->getOutput());
             }
+
+            $this->get('logger')->error('Failed update of '.$package->getName(), ['exception' => $e]);
 
             return new Response(json_encode(array(
                 'status' => 'error',
@@ -283,8 +327,8 @@ class ApiController extends Controller
         $packages = array();
         foreach ($user->getPackages() as $package) {
             if (preg_match($urlRegex, $package->getRepository(), $candidate)
-                && $candidate['host'] === $matched['host']
-                && $candidate['path'] === $matched['path']
+                && strtolower($candidate['host']) === strtolower($matched['host'])
+                && strtolower($candidate['path']) === strtolower($matched['path'])
             ) {
                 $packages[] = $package;
             }
