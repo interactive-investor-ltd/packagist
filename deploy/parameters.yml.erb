@@ -17,6 +17,8 @@ parameters:
     # router.request_context.scheme: https
 
     redis_dsn: <%= node[:packagist][:redis][:dsn] %>
+    redis_dsn_test: redis://127.0.0.1/14
+    redis_session_dsn: <%= node[:packagist][:redis][:dsn] %>
 
     locale: en
 
