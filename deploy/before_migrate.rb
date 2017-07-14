@@ -25,14 +25,14 @@ composer_project "#{release_path}" do
 end
 
 directory "#{release_path}/app/cache" do
-    user deploy
-    group apache
+  owner 'deploy'
+  group 'apache'
     mode '0775'
 end
 
 directory "#{release_path}/app/logs" do
-    user deploy
-    group apache
+  owner 'deploy'
+  group 'apache'
     mode '0775'
 end
 
