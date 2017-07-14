@@ -24,24 +24,16 @@ composer_project "#{release_path}" do
     action :install
 end
 
-execute "change-owner-cache" do
-  command "chown -R deploy:apache #{release_path}/app/cache"
-  user "root"
-end
-        
-execute "change-owner-logs" do
-  command "chown -R deploy:apache #{release_path}/app/logs"
-  user "root"
+directory "#{release_path}/app/cache" do
+    user deploy
+    group apache
+    mode '0775'
 end
 
-execute "change-permission-cache" do
-  command "chmod -R 777 #{release_path}/app/cache"
-  user "root"
-end
-        
-execute "change-permission-logs" do
-  command "chmod -R 777 #{release_path}/app/logs"
-  user "root"
+directory "#{release_path}/app/logs" do
+    user deploy
+    group apache
+    mode '0775'
 end
 
 directory '/home/deploy/.composer' do
@@ -50,12 +42,6 @@ directory '/home/deploy/.composer' do
   mode '0775'
   action :create
 end
-
-execute "change-permission-composer home" do
-  command "chmod -R 777 /home/deploy/.composer"
-  user "root"
-end
-
 
 execute "install web assets" do
   command "app/console assets:install web"
